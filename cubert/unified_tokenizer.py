@@ -17,11 +17,12 @@
 """Cross-language tokenization library."""
 
 import enum
-import token
+import token as python_token
 import tokenize
-from typing import List, Mapping, Sequence, Text, Tuple
+from typing import List, Mapping, Optional, Sequence, Text, Tuple
 
 from absl import logging
+import dataclasses
 import regex  # Using instead of `re` because it handles Unicode classes.
 import six
 
@@ -47,6 +48,49 @@ class TokenKind(enum.Enum):
   ERROR = 8
   NUMBER = 9
   WHITESPACE = 10
+
+
+@dataclasses.dataclass(frozen=True)
+class Position():
+  line: int
+  column: int
+
+
+@dataclasses.dataclass(frozen=True)
+class TokenMetadata():
+  """Metadata about abstract tokens.
+
+  Attributes:
+    start: The position of the first character of the token.
+    end: The position right after the last character of the token. The line is
+      the same as the line of the last character and the column is the
+      column immediately following the last column of the token.
+  """
+  start: Optional[Position] = None
+  end: Optional[Position] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class AbstractToken():
+  spelling: str
+  kind: TokenKind
+  metadata: TokenMetadata
+
+
+@dataclasses.dataclass(frozen=True)
+class AbstractMultiToken():
+  # We force `spellings` to be a concrete `Tuple`, to simplify equality checks
+  # and hashing. Otherwise, `spellings=[1, 2, 3]` and `spellings=(1, 2, 3)`
+  # would result in different multi-tokens.
+  spellings: Tuple[str]
+  kind: TokenKind
+  metadata: TokenMetadata
+
+
+def multi_token_from_token(token):
+  return AbstractMultiToken(spellings=(token.spelling,),
+                            kind=token.kind,
+                            metadata=token.metadata)
 
 
 _KINDS_TO_SPLIT_LIKE_WHITESPACE = (TokenKind.COMMENT, TokenKind.STRING,
@@ -125,7 +169,7 @@ def code_to_tokens(code):
   # Python 2 and Python 3.
   if six.PY3:
     if len(token_tuples) > 1:
-      if token_tuples[-2][0] == token.NEWLINE:
+      if token_tuples[-2][0] == python_token.NEWLINE:
         del token_tuples[-2]
         logging.vlog(5, 'Tokenization for `%s` was sanitized. Now token tuples '
                      'are `%s`.', code, token_tuples)
@@ -409,7 +453,7 @@ def _agnostic_tokens_to_lists_of_token_lists(
     agnostic_tokens
 ):
   """Turns each token into a singleton token list, keeping token kinds."""
-  return [([t], k) for t, k in agnostic_tokens]
+  return [multi_token_from_token(a) for a in agnostic_tokens]
 
 
 def _subtokenize_identifiers_heuristically(
@@ -426,17 +470,18 @@ def _subtokenize_identifiers_heuristically(
   Returns:
     A list of token lists, of which the identifiers are split heuristically.
   """
-  with_split_identifiers = []  # type: List[Tuple[List[Text], TokenKind]]
-  for spelling_list, kind in token_lists:
+  with_split_identifiers: List[AbstractMultiToken] = []
+  for multi_token in token_lists:
     # spelling_list had better still be a singleton.
-    assert len(spelling_list) == 1, (
-        'Expected %r to be a singleton, but it is not.' % spelling_list)
-    if kind is TokenKind.IDENTIFIER:
-      subtokenized = (subtokenize_identifier(spelling_list[0]),
-                      kind)  # type: Tuple[List[Text], TokenKind]
+    assert len(multi_token.spellings) == 1, (
+        'Expected %r to be a singleton, but it is not.' % multi_token)
+    if multi_token.kind is TokenKind.IDENTIFIER:
+      subtokenized = dataclasses.replace(
+          multi_token,
+          spellings=subtokenize_identifier(multi_token.spellings[0]))
       with_split_identifiers.append(subtokenized)
     else:
-      with_split_identifiers.append((spelling_list, kind))
+      with_split_identifiers.append(multi_token)
   return with_split_identifiers
 
 
@@ -453,16 +498,17 @@ def _subtokenize_strings_heuristically(
     A list of token lists, of which IDENTIFIER, STRING, NUMBER, COMMENT tokens
       are now split heuristically.
   """
-  with_heuristically_split_text = []  # type: List[Tuple[List[Text], TokenKind]]
-  for spelling_list, kind in token_lists:
-    if kind in _KINDS_TO_SPLIT_LIKE_WHITESPACE:
-      assert len(spelling_list) == 1, (
-          'Expected %r to be a singleton, but it is not.' % spelling_list)
-      subtokenized = (code_to_tokens_simple_lossless(
-          spelling_list[0]), kind)  # type: Tuple[List[Text], TokenKind]
+  with_heuristically_split_text: List[AbstractMultiToken] = []
+  for multi_token in token_lists:
+    if multi_token.kind in _KINDS_TO_SPLIT_LIKE_WHITESPACE:
+      assert len(multi_token.spellings) == 1, (
+          'Expected %r to be a singleton, but it is not.' % multi_token)
+      subtokenized = dataclasses.replace(
+          multi_token,
+          spellings=code_to_tokens_simple_lossless(multi_token.spellings[0]))
       with_heuristically_split_text.append(subtokenized)
     else:
-      with_heuristically_split_text.append((spelling_list, kind))
+      with_heuristically_split_text.append(multi_token)
   return with_heuristically_split_text
 
 
@@ -485,16 +531,18 @@ def _shorten_subtokens(
   Returns:
     Subtokenized tokens up to a maximum per-subtoken length.
   """
-  shortened_subtokens = []  # type: List[Tuple[List[Text], TokenKind]]
-  for spelling_list, kind in token_lists:
-    if kind in _KINDS_TO_SPLIT_BY_LENGTH:
-      shortened_spelling_list = []  # type: List[Text]
-      for spelling in spelling_list:
+  shortened_subtokens: List[AbstractMultiToken] = []
+  for multi_token in token_lists:
+    if multi_token.kind in _KINDS_TO_SPLIT_BY_LENGTH:
+      shortened_spelling_list: List[str] = []
+      for spelling in multi_token.spellings:
         shortened_spelling_list.extend(
             split_long_token(spelling, max_output_token_length))
-      shortened_subtokens.append((shortened_spelling_list, kind))
+      shortened_subtokens.append(
+          dataclasses.replace(
+              multi_token, spellings=tuple(shortened_spelling_list)))
     else:
-      shortened_subtokens.append((spelling_list, kind))
+      shortened_subtokens.append(multi_token)
   return shortened_subtokens
 
 
@@ -535,15 +583,15 @@ def sanitize_subtoken_lists(
   """Sanitizes lists of subtoken lists, adding sentinels.
 
   Args:
-    subtoken_lists: A list of subtoken lists, one list per initial language
-      token. Cannot be empty or contain empty sublists.
+    subtoken_lists: A list of multi-tokens. Cannot be empty or contain empty
+      sublists.
     sanitization_mapping: A mapping from sensitive characters to replacement
       strings. It is assumed to have been checked by `check_mappings`.
     sentinel: The sentinel character. It is expected to be one of the keys
       in `sanitization_mapping`.
 
   Returns:
-    A list of subtoken lists representing the entire original sequence.
+    A list of multi-tokens.
 
   Raises:
     ValueError: If one of the input sublists is empty, or the entire input
@@ -557,20 +605,22 @@ def sanitize_subtoken_lists(
                      'but is not.' % (sentinel, sanitization_mapping))
 
   sanitized_lists = []
-  for spelling_list in subtoken_lists:
-    if not spelling_list:
-      raise ValueError('Received empty sublist %r but expected no sublist '
-                       'to be empty' % subtoken_lists)
-    sanitized_list = [
+  for multi_token in subtoken_lists:
+    spellings = multi_token.spellings
+    if not spellings:
+      raise ValueError('Received empty multi-token %r but expected no empty '
+                       'ones' % multi_token)
+    sanitized_spellings = [
         sanitize(t, sanitization_mapping)
-        for t in spelling_list
+        for t in spellings
     ]
 
     # Add the sentinel to all subtokens except the last one.
-    with_sentinel = [
-        t + sentinel for t in sanitized_list[:-1]] + [sanitized_list[-1]]
+    with_sentinel = ([t + sentinel for t in sanitized_spellings[:-1]] +
+                     [sanitized_spellings[-1]])
 
-    sanitized_lists.append(with_sentinel)
+    sanitized_lists.append(
+        dataclasses.replace(multi_token, spellings=with_sentinel))
   return sanitized_lists
 
 
@@ -590,9 +640,9 @@ def flatten_subtoken_lists(
   """
   if not subtoken_lists:
     raise ValueError('Received empty input %r but expected it to be non '
-                     'empty' % subtoken_lists)
-
-  subtokens = sum(subtoken_lists, [])
+                     'empty' % (subtoken_lists,))
+  spellings = (t.spellings for t in subtoken_lists)
+  subtokens = sum(spellings, [])
 
   return subtokens
 
@@ -604,7 +654,7 @@ def flatten_and_sanitize_subtoken_lists(
   """Sanitizes and then flattens lists of subtoken lists, adding sentinels.
 
   Args:
-    subtoken_lists: A list of subtoken lists, one list per initial language
+    subtoken_lists: A list of multi-tokens, one per initial language
       token. Cannot be empty or contain empty sublits.
     sanitization_mapping: A mapping from sensitive characters to replacement
       strings. It is assumed to have been checked by `check_mappings`.
@@ -764,11 +814,7 @@ def subtokenize_agnostic_tokens_in_place(
   labelled_subtokenized = split_agnostic_tokens(agnostic_tokens,
                                                 max_output_token_length)
 
-  unlabelled_subtokenized = [
-      spellings for spellings, _ in labelled_subtokenized
-  ]
-
-  subtoken_lists = sanitize_subtoken_lists(unlabelled_subtokenized,
+  subtoken_lists = sanitize_subtoken_lists(labelled_subtokenized,
                                            sanitization_mapping,
                                            sentinel)
   return subtoken_lists

@@ -8,6 +8,7 @@ python:
 env:
   jobs:
     - PROJECT="abps"
+    - PROJECT="adaptive_learning_rate_tuner"
     - PROJECT="albert"
     - PROJECT="algae_dice"
     - PROJECT="attribution"
@@ -33,6 +34,7 @@ env:
     - PROJECT="extrapolation"
     - PROJECT="fat"
     - PROJECT="flax_cifar"
+    - PROJECT="frequency_analysis"
     - PROJECT="generalized_rates"
     - PROJECT="genomics_ood"
     - PROJECT="graph_embedding/dmon"
