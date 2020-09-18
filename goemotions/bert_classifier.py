@@ -47,9 +47,9 @@ import collections
 import json
 import os
 
-from dataset_analysis.bert import modeling
-from dataset_analysis.bert import optimization
-from dataset_analysis.bert import tokenization
+from bert import modeling
+from bert import optimization
+from bert import tokenization
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -164,7 +164,7 @@ flags.DEFINE_integer("iterations_per_loop", 1000,
 flags.DEFINE_integer("eval_steps", None,
                      "How many steps to take to go over the eval set.")
 
-flags.DEFINE_string("sentiment_file", "sentiment_dict.json",
+flags.DEFINE_string("sentiment_file", "data/sentiment_dict.json",
                     "Dictionary of sentiment categories.")
 
 flags.DEFINE_string("entailment_file", "entailment_dict.json",
